@@ -63,6 +63,10 @@ type Filter struct {
 	// Account narrows to the calls a subscription account answered, by its
 	// name as Record.Account gives it (#557)
 	Account string
+	// Session keeps the calls of one exact conversation. Both Session and
+	// NativeSession are matched because X-Magpie-Session may override the
+	// client's own id in the former.
+	Session string
 	// Failed keeps the rows of the requests the agent got an error for
 	// (Record.LostRequest), Retried those of the requests answered after a
 	// try that failed first (Record.RetriedRequest): what the Requests
@@ -169,6 +173,9 @@ func (f Filter) keepsRecord(r Record, codexIdentity bool, subagent, parentAgent 
 		return false
 	}
 	if f.Account != "" && r.Account() != f.Account {
+		return false
+	}
+	if f.Session != "" && r.Session != f.Session && r.NativeSession != f.Session {
 		return false
 	}
 	if !f.computer(r) {

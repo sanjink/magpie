@@ -1786,6 +1786,19 @@ or subagent calls. It stores no prompt, reply text or key; deltas are counted
 as they pass and discarded. `speed_estimated: true` is the contract: this is
 a streaming estimate, not a tokenizer's exact count.
 
+For the expanded HUD's session analytics, `GET
+/v1/magpie/session/stats?session=<id>` answers one exact conversation. It is
+loopback-only and `Cache-Control: no-store`. `model_ms` and `tool_ms` are
+completed model- and tool-time totals; `ttft_ms` is the mean TTFT of valid
+completed calls; `tps` is the weighted exact `ΣdecodeTokens / ΣdecodeMs`
+using `usage.Row.Decode()`; `peak_tps` is the largest exact completed-call
+TPS; `active_ms` is the union of completed model and tool intervals;
+`tokens`/`cache` carry the session token totals; `series` has one point per
+completed measurable call (`at`, `call_id`, `tps`, `model`). `provisional`
+is the current live call's temporary point and never changes a completed
+total or the peak. The endpoint reuses ledger deduplication across gateway
+and session-file calls, and returns no prompt, reply, tool body or key.
+
 To show the one in use without a session, `GET /v1/magpie/quotas` (and
 `magpie quota --json`, the same list) has `lastServedAt` on each
 subscription account, plan and key that answered a request through the

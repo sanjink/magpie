@@ -71,6 +71,44 @@ returned. Between calls, the last row is `done` and `active: false`, so the
 caller can show a turn average while tools run. A completed usage row remains
 the exact source and outranks the live estimate.
 
+## Session analytics
+
+`GET /v1/magpie/session/stats?session=<id>`
+
+This is the expanded HUD's session-level companion to the live stream. It is
+also loopback-only and `Cache-Control: no-store`. It reads only metadata:
+no prompt, reply, tool body or credential is returned.
+
+The response is:
+
+`session`, `model_ms`, `tool_ms`, `ttft_ms`, `ttft_count`,
+`decode_tokens`, `decode_ms`, `tps`, `peak_tps`, `steps`, `active_ms`,
+`tokens` (`input`, `output`, `cache_read`, `cache_write`),
+`cache` (`read`, `write`), `series` and `provisional`.
+
+The figures cover one exact `Session` or `NativeSession`, and reuse the
+usage ledger's gateway/session-file deduplication:
+
+- `model_ms` sums the `Millis` of completed model calls, failed calls
+  included when they recorded a duration.
+- `tool_ms` sums completed `tool` trace spans, failed tools included.
+- `ttft_ms` is the mean TTFT of completed calls with a positive TTFT.
+- `tps` is `ΣdecodeTokens / ΣdecodeMs`; every row uses `usage.Row.Decode()`,
+  the same exact rule as the Usage page.
+- `peak_tps` is the maximum exact TPS among completed calls.
+- `active_ms` is the union of completed model-call and tool intervals, so
+  user-idle gaps are not counted.
+- `series` has one point per completed, measurable model call:
+  `at` (call end), `call_id`, `tps` and `model`.
+- `provisional` is the current live call's temporary speed point. It is
+  never included in `model_ms`, `ttft_ms`, `decode_ms`, `tps`, `peak_tps`
+  or any token total.
+
+The gateway caches a completed answer briefly and polls trace files
+incrementally, so the HUD's roughly one-second refresh does not rescan the
+whole history each time. A session switch resets the HUD's local state; a
+new turn does not reset the session totals.
+
 ## Verification
 
 - `TestLiveSpeedWindowAndStale`
@@ -81,6 +119,8 @@ the exact source and outranks the live estimate.
 - `TestLiveEndpointLoopbackAndShape`
 - `TestLiveCodexUpstreamIntegration`
 - `TestLiveTranslatedIntegration`
+- `TestBuildSessionStatsCompletedOnlyAndExactSession`
+- `TestSessionStatsEndpointLoopbackAndShape`
 
 Implementation: [`internal/gateway/live.go`](../../internal/gateway/live.go),
 the observer in [`internal/gateway/ttft.go`](../../internal/gateway/ttft.go),
