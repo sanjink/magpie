@@ -35,6 +35,8 @@ type firstToken struct {
 	// mark a millisecond, from the first content on
 	flow []flowMark
 	sum  int
+	// live is the notch HUD's estimate of the stream in flight.
+	live *liveRun
 }
 
 // flowMark is how many bytes of content events had come by at.
@@ -64,6 +66,7 @@ func (f *firstToken) see(b []byte) {
 	}
 	f.pend = append(f.pend, b...)
 	d := max(time.Since(f.start), time.Millisecond)
+	liveAt := time.Now()
 	for !f.off {
 		end := eventEnd(f.pend)
 		if end < 0 {
@@ -77,24 +80,30 @@ func (f *firstToken) see(b []byte) {
 			if flowContent(ev) {
 				f.mark(d, len(ev))
 			}
+			if f.live != nil {
+				f.live.observeAll(timingInfoOf(ev).deltas, liveAt)
+			}
 			continue
 		}
-		content, text, reasoning, hidden := timingKind(ev)
-		f.hidden = f.hidden || hidden
-		if reasoning {
+		info := timingInfoOf(ev)
+		f.hidden = f.hidden || info.hidden
+		if info.reasoning {
 			if f.reasoning == 0 {
 				f.reasoning = d
 			}
 			f.lastReasoning = d
 		}
-		if !content && !text {
+		if f.live != nil {
+			f.live.observeAll(info.deltas, liveAt)
+		}
+		if !info.content && !info.text {
 			continue
 		}
 		if f.first == 0 {
 			f.first = d
 		}
 		f.mark(d, len(ev))
-		if text {
+		if info.text {
 			f.text = d
 		}
 	}
@@ -177,7 +186,17 @@ func firstKind(ev []byte) (content, text bool) {
 	return
 }
 
+type timingInfo struct {
+	content, text, reasoning, hidden bool
+	deltas                           []liveDelta
+}
+
 func timingKind(ev []byte) (content, text, reasoning, hidden bool) {
+	info := timingInfoOf(ev)
+	return info.content, info.text, info.reasoning, info.hidden
+}
+
+func timingInfoOf(ev []byte) timingInfo {
 	var name string
 	var data []byte
 	for _, ln := range bytes.Split(ev, []byte("\n")) {
@@ -193,7 +212,7 @@ func timingKind(ev []byte) (content, text, reasoning, hidden bool) {
 	// rest go by unread
 	if len(data) == 0 || !(bytes.Contains(data, []byte("delta")) || bytes.Contains(data, []byte(`"parts"`)) ||
 		bytes.Contains(data, []byte("content_block_start")) || bytes.Contains(data, []byte("output_item.added")) || bytes.Contains(data, []byte("encrypted_content"))) {
-		return false, false, false, hidden
+		return timingInfo{}
 	}
 	var v struct {
 		Type         string          `json:"type"`
@@ -226,17 +245,21 @@ func timingKind(ev []byte) (content, text, reasoning, hidden bool) {
 		} `json:"candidates"`
 	}
 	if json.Unmarshal(data, &v) != nil {
-		return false, false, false, hidden
+		return timingInfo{}
 	}
+	var info timingInfo
 	typ := v.Type
 	if typ == "" {
 		typ = name
 	}
 	if v.Item != nil && v.Item.EncryptedContent != "" {
-		hidden = true
+		info.hidden = true
 	}
 	if v.ContentBlock != nil && v.ContentBlock.Type == "redacted_thinking" {
-		hidden = true
+		info.hidden = true
+	}
+	add := func(phase livePhase, text string) {
+		info.deltas = append(info.deltas, liveDelta{phase: phase, text: text})
 	}
 	switch typ {
 	case "content_block_delta": // Anthropic
@@ -249,51 +272,119 @@ func timingKind(ev []byte) (content, text, reasoning, hidden bool) {
 		json.Unmarshal(v.Delta, &d)
 		switch {
 		case d.Text != "":
-			return true, true, reasoning, hidden
+			info.content, info.text = true, true
+			add(liveText, d.Text)
 		case d.Thinking != "":
-			return true, false, true, false
+			info.content, info.reasoning = true, true
+			add(liveReasoning, d.Thinking)
 		case d.PartialJSON != "":
-			return true, false, reasoning, hidden
+			info.content = true
+			add(liveTool, d.PartialJSON)
 		}
-		return false, false, false, hidden
+		return info
 	case "content_block_start":
 		if b := v.ContentBlock; b != nil && (b.Type == "tool_use" || b.Type == "server_tool_use") {
-			return true, false, reasoning, hidden
+			info.content = true
+			add(liveTool, "")
 		}
-		return false, false, false, hidden
+		return info
 	case "response.output_text.delta", "response.refusal.delta": // Responses
-		return filled(v.Delta), filled(v.Delta), false, false
+		info.content, info.text = filled(v.Delta), filled(v.Delta)
+		if info.text {
+			add(liveText, liveTextValue(v.Delta))
+		}
+		return info
 	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta",
 		"response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
-		return filled(v.Delta), false, (typ == "response.reasoning_text.delta" || typ == "response.reasoning_summary_text.delta") && filled(v.Delta), false
+		info.content = filled(v.Delta)
+		if info.content {
+			switch typ {
+			case "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
+				info.reasoning = true
+				add(liveReasoning, liveTextValue(v.Delta))
+			default:
+				add(liveTool, liveTextValue(v.Delta))
+			}
+		}
+		return info
 	case "response.output_item.added":
 		if it := v.Item; it != nil && (it.Type == "function_call" || it.Type == "custom_tool_call") {
-			return true, false, reasoning, hidden
+			info.content = true
+			add(liveTool, "")
 		}
-		return false, false, false, hidden
+		return info
 	}
 	for _, c := range v.Choices { // Chat
 		d := c.Delta
-		reasoning = reasoning || filled(d.ReasoningContent) || filled(d.Reasoning)
-		if filled(d.Content) || filled(d.Refusal) {
-			return true, true, reasoning, hidden
+		if filled(d.ReasoningContent) {
+			info.reasoning = true
+			info.content = true
+			add(liveReasoning, liveTextValue(d.ReasoningContent))
 		}
-		if filled(d.ReasoningContent) || filled(d.Reasoning) || filled(d.ToolCalls) || filled(d.FunctionCall) {
-			content = true
+		if filled(d.Reasoning) {
+			info.reasoning = true
+			info.content = true
+			add(liveReasoning, liveTextValue(d.Reasoning))
+		}
+		if filled(d.Content) || filled(d.Refusal) {
+			info.content, info.text = true, true
+			if filled(d.Content) {
+				add(liveText, liveTextValue(d.Content))
+			} else {
+				add(liveText, liveTextValue(d.Refusal))
+			}
+		}
+		if filled(d.ToolCalls) {
+			info.content = true
+			var calls []struct {
+				Function struct {
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			}
+			if json.Unmarshal(d.ToolCalls, &calls) == nil {
+				added := false
+				for _, call := range calls {
+					if call.Function.Arguments != "" {
+						add(liveTool, call.Function.Arguments)
+						added = true
+					}
+				}
+				if !added {
+					add(liveTool, "")
+				}
+			} else {
+				add(liveTool, liveTextValue(d.ToolCalls))
+			}
+		}
+		if filled(d.FunctionCall) {
+			info.content = true
+			var call struct {
+				Arguments string `json:"arguments"`
+			}
+			if json.Unmarshal(d.FunctionCall, &call) == nil && call.Arguments != "" {
+				add(liveTool, call.Arguments)
+			} else {
+				add(liveTool, "")
+			}
 		}
 	}
 	for _, c := range v.Candidates { // Gemini
 		for _, p := range c.Content.Parts {
 			switch {
 			case p.Text != "" && !p.Thought:
-				return true, true, reasoning, hidden
-			case p.Text != "", filled(p.FunctionCall):
-				content = true
-				reasoning = reasoning || p.Thought && p.Text != ""
+				info.content, info.text = true, true
+				add(liveText, p.Text)
+			case p.Text != "":
+				info.content, info.reasoning = true, true
+				add(liveReasoning, p.Text)
+			}
+			if filled(p.FunctionCall) {
+				info.content = true
+				add(liveTool, string(p.FunctionCall))
 			}
 		}
 	}
-	return content, false, reasoning, hidden
+	return info
 }
 
 // filled is a JSON value with something in it.
@@ -303,6 +394,14 @@ func filled(raw json.RawMessage) bool {
 		return false
 	}
 	return true
+}
+
+func liveTextValue(raw json.RawMessage) string {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	return ""
 }
 
 // flowFor is flowMs from where a reply's speed is counted from, as

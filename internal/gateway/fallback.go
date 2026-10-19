@@ -1662,6 +1662,12 @@ func newHoldWriter(w http.ResponseWriter, hold bool) *holdWriter {
 	return &holdWriter{w: w, hold: hold, header: http.Header{}, first: firstToken{start: time.Now()}}
 }
 
+func newHoldWriterFor(w http.ResponseWriter, hold bool, r *http.Request) *holdWriter {
+	h := newHoldWriter(w, hold)
+	h.first.live = liveRunOf(r)
+	return h
+}
+
 func (h *holdWriter) Header() http.Header { return h.header }
 
 // note sets a header magpie says of the try, which keepAlive may send

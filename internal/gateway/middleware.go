@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/gwmw"
@@ -20,6 +21,8 @@ import (
 // search and vision stand-ins) go without them, as their replies are
 // magpie's to read.
 func (s *Server) serveAgent(w http.ResponseWriter, r *http.Request, from provider.Protocol, body []byte) {
+	r, liveDone := s.beginLiveRun(r, body, time.Now())
+	defer liveDone()
 	withGatewaySession(w, r)
 	w, recorded := recordConversation(w, r, from, body)
 	defer recorded()

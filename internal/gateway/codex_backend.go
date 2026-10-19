@@ -828,6 +828,8 @@ func (s *Server) codexUpstream(w http.ResponseWriter, r *http.Request, rest stri
 // Codex's own sign-in, when on isn't nil (compactOn).
 func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest string, body []byte, on *provider.Provider) {
 	start := time.Now()
+	r, liveDone := s.beginLiveRun(r, body, start)
+	defer liveDone()
 	usage.Saw(agentOf(r))
 	if r.Method == http.MethodPost {
 		var unmask func()
@@ -855,8 +857,8 @@ func (s *Server) codexUpstreamOn(w http.ResponseWriter, r *http.Request, rest st
 	// a turn goes in the Routing view's live trace as the others do, to
 	// the one it can go to: Codex's own sign-in, or its key
 	var tr *Route
-	first := firstToken{start: start} // the reply's first tokens (#196), counted as ms are
-	served := ""                      // the model the reply says answered
+	first := firstToken{start: start, live: liveRunOf(r)} // the reply's first tokens (#196), counted as ms are
+	served := ""                                          // the model the reply says answered
 	var uu Usage
 	metadata := requestSessionMetadata(r.Header, body)
 	kind := requestCallKind(r.Header, metadata)

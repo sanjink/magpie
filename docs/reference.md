@@ -1764,6 +1764,28 @@ another only with the key of a gateway shared on the local network. A key
 held to a budget, to some models or to some accounts is told the routes of
 its own requests alone: another key's session answers `route: null`.
 
+For a live speed while Codex is still writing, `GET
+/v1/magpie/live?session=<id>&turn=<turn-id>` reads the gateway's in-process
+stream estimate. `turn` is optional; a session with no active request answers
+`active: false`, `done: false`. The fixed fields are `active`, `done`,
+`session`, `turn`, `model`, `phase` (`waiting`, `reasoning`, `text` or
+`tool`), `started_at`, `first_at`, `updated_at`, `estimated_tokens`, `speed`,
+`window_ms`, `speed_estimated` and `stale`. The estimate counts ASCII
+characters as one quarter token and each non-ASCII character as one, at least
+one token for every non-empty delta; it publishes a speed only from a
+one-second sliding window spanning at least 300ms with at least 8 estimated
+tokens, capped at 10,000 tok/s. No delta for 1.5 seconds makes the row
+`stale` and drops its speed to zero. A completed usage row remains the exact
+source the HUD shows after the request.
+
+The live endpoint is loopback-only and answers another machine or a proxied
+call `403`, even with a gateway key. It keeps the latest 64 Codex requests and
+a completed request for 30 seconds. It follows only a Codex conversation's
+main turns, not titles, descriptions, predictions, auxiliary, search, vision
+or subagent calls. It stores no prompt, reply text or key; deltas are counted
+as they pass and discarded. `speed_estimated: true` is the contract: this is
+a streaming estimate, not a tokenizer's exact count.
+
 To show the one in use without a session, `GET /v1/magpie/quotas` (and
 `magpie quota --json`, the same list) has `lastServedAt` on each
 subscription account, plan and key that answered a request through the

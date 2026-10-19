@@ -70,7 +70,11 @@ picked for the turn and the fallbacks it tried, before the first token
 user's subscription allowances, and `GET /v1/magpie/usage` and
 `/v1/magpie/usage/requests` the Usage page's numbers and its requests
 (with `session`, and `subagent`/`parent_agent` for a Claude Code
-subagent's call). They answer only this machine, or another with a gateway
+subagent's call). While a Codex reply is streaming,
+`GET /v1/magpie/live?session=<id>&turn=<turn-id>` gives its live estimated
+speed and phase; it is loopback-only and stores no prompt or reply text
+([details](subsystems/gateway-live.md)). The other status APIs answer only
+this machine, or another with a gateway
 key; a key held to a budget, models or accounts sees its own calls and
 routes alone, and is refused the quotas unless its owner lets it see
 those of what it may use (`magpie gateway-key quotas <id> on`, #2216;
